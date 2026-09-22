@@ -177,6 +177,11 @@ func (s *Store) rename(oldP,newP string) error {
 }
 func boolInt(v bool) int {if v{return 1};return 0}
 
+func (s *Store) upsert(i Item) error {
+ _,err:=s.db.Exec("INSERT OR REPLACE INTO items(path,name,is_dir,size,mime,mod_time,location) VALUES(?,?,?,?,?,?,?)",i.Path,i.Name,boolInt(i.Dir),i.Size,i.MIME,i.Mod.Unix(),i.Loc)
+ return err
+}
+
 type Telegram struct {
 	cfg Config
 	store *Store
