@@ -24,6 +24,9 @@ import (
 	"github.com/gotd/td/session"
 	"github.com/joho/godotenv"
 	"github.com/gotd/td/telegram"
+	"github.com/gotd/td/telegram/message"
+	"github.com/gotd/td/telegram/message/unpack"
+	"github.com/gotd/td/telegram/peers"
 	"github.com/gotd/td/tg"
 	"golang.org/x/net/webdav"
 	_ "modernc.org/sqlite"
@@ -178,6 +181,7 @@ type Telegram struct {
 	cfg Config
 	store *Store
 	client *telegram.Client
+	peers *peers.Manager
 }
 
 func (t *Telegram) run(ctx context.Context) error {
@@ -196,6 +200,8 @@ func (t *Telegram) run(ctx context.Context) error {
 	})
 	return t.client.Run(ctx,func(ctx context.Context) error {
 		if _,err:=t.client.Auth().Bot(ctx,t.cfg.BotToken); err!=nil { return err }
+		t.peers = peers.Options{}.Build(t.client.API())
+		if err:=t.peers.Init(ctx); err!=nil { return err }
 		return telegram.RunUntilCanceled(ctx,t.client)
 	})
 }
@@ -279,7 +285,59 @@ func(f *FS)Mkdir(_ context.Context,n string,_ os.FileMode)error{return f.s.ensur
 func(f *FS)Stat(_ context.Context,n string)(os.FileInfo,error){i,e:=f.s.stat(n);if e!=nil{return nil,e};return fileInfo{i.Name,i.Size,i.Dir,i.Mod},nil}
 func(f *FS)RemoveAll(_ context.Context,n string)error{return f.s.remove(n)}
 func(f *FS)Rename(_ context.Context,a,b string)error{return f.s.rename(a,b)}
-func(f *FS)OpenFile(ctx context.Context,n string,_ int,_ os.FileMode)(webdav.File,error){i,e:=f.s.stat(n);if e!=nil{return nil,e};if i.Dir{xs,e:=f.s.list(n);if e!=nil{return nil,e};return &dirFile{fileInfo{i.Name,0,true,i.Mod},xs,0},nil};if f.t.client==nil{return nil,errors.New("Telegram not connected")};l,e:=decodeLocation(i.Loc);if e!=nil{return nil,e};return &rangeFile{ctx,f.t.client,l,i.Size,0,i.Name,f.t.cfg.Chunk,f.c},nil}
+type uploadFile struct{fs *FS; name string; file *os.File}
+func (u *uploadFile) Close() error {
+ if u.file==nil{return nil}
+ if err:=u.file.Close();err!=nil{return err}
+ defer os.Remove(u.file.Name())
+ return u.fs.t.uploadFile(context.Background(),u.file.Name(),u.name)
+}
+func(u *uploadFile)Read(p []byte)(int,error){return u.file.Read(p)}
+func(u *uploadFile)Write(p []byte)(int,error){return u.file.Write(p)}
+func(u *uploadFile)Seek(o int64,w int)(int64,error){return u.file.Seek(o,w)}
+func(u *uploadFile)Stat()(os.FileInfo,error){return u.file.Stat()}
+func(u *uploadFile)Readdir(int)([]os.FileInfo,error){return nil,errors.New("not a directory")}
+
+func(t *Telegram) uploadFile(ctx context.Context, local, name string) error {
+ if t.client==nil || t.peers==nil{return errors.New("Telegram not connected")}
+ ch,err:=t.peers.ResolveChannelID(ctx,t.cfg.Channel);if err!=nil{return err}
+	s:=message.NewSender(t.client.API()).To(ch.InputPeer())
+	upd,err:=s.Upload(message.FromPath(local)).File(ctx);if err!=nil{return err}
+	m,err:=unpack.Message(upd);if err!=nil{return err}
+	var loc tg.InputFileLocationClass;var size int64;mt:=mime.TypeByExtension(filepath.Ext(name))
+	switch x:=m.Media.(type){
+	case *tg.MessageMediaDocument:
+		d,ok:=x.Document.(*tg.Document);if !ok{return errors.New("uploaded document missing")}
+		loc=&tg.InputDocumentFileLocation{ID:d.ID,AccessHash:d.AccessHash,FileReference:d.FileReference};size=d.Size;if d.MimeType!=""{mt=d.MimeType}
+	case *tg.MessageMediaPhoto:
+		p,ok:=x.Photo.(*tg.Photo);if !ok{return errors.New("uploaded photo missing")}
+		loc=&tg.InputPhotoFileLocation{ID:p.ID,AccessHash:p.AccessHash,FileReference:p.FileReference};size=0;if mt==""{mt="image/jpeg"}
+	default:return errors.New("Telegram returned unsupported media")
+	}
+	b,err:=encodeLocation(loc);if err!=nil{return err}
+	p:=clean("/"+t.cfg.Folder+"/"+name)
+	return t.store.upsert(Item{Path:p,Name:name,Size:size,MIME:mt,Dir:false,Mod:time.Now(),Loc:b})
+}
+
+func(f *FS)OpenFile(ctx context.Context,n string,flag int,_ os.FileMode)(webdav.File,error){
+ i,e:=f.s.stat(n)
+ if e!=nil && (flag&(os.O_CREATE|os.O_WRONLY|os.O_RDWR))!=0 {
+  if err:=f.s.ensureFolder(path.Dir(clean(n)));err!=nil{return nil,err}
+  if err:=os.MkdirAll("./data/uploads",0700);err!=nil{return nil,err}
+  tf,err:=os.CreateTemp("./data/uploads","put-*");if err!=nil{return nil,err}
+  return &uploadFile{fs:f,name:path.Base(clean(n)),file:tf},nil
+ }
+ if e!=nil{return nil,e}
+ if flag&(os.O_WRONLY|os.O_RDWR|os.O_TRUNC)!=0 && !i.Dir {
+  if err:=os.MkdirAll("./data/uploads",0700);err!=nil{return nil,err}
+  tf,err:=os.CreateTemp("./data/uploads","put-*");if err!=nil{return nil,err}
+  return &uploadFile{fs:f,name:path.Base(clean(n)),file:tf},nil
+ }
+ if i.Dir{xs,e:=f.s.list(n);if e!=nil{return nil,e};return &dirFile{fileInfo{i.Name,0,true,i.Mod},xs,0},nil}
+ if f.t.client==nil{return nil,errors.New("Telegram not connected")}
+ l,e:=decodeLocation(i.Loc);if e!=nil{return nil,e}
+ return &rangeFile{ctx,f.t.client,l,i.Size,0,i.Name,f.t.cfg.Chunk,f.c},nil
+}
 
 func basic(user, pass string, h http.Handler) http.Handler {
  return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
