@@ -7,6 +7,7 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
+	"encoding/json"
 	"io"
 	"log"
 	"mime"
@@ -310,6 +311,9 @@ func main(){
   for i,x:=range xs{if i>0{fmt.Fprint(w,",")};fmt.Fprintf(w,"{\"name\":%q,\"path\":%q,\"dir\":%t,\"size\":%d}",x.Name,x.Path,x.Dir,x.Size)}
   fmt.Fprint(w,"]}")
  })))
+ mux.Handle("/api/mkdir",basic(c.User,c.Pass,http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){var x struct{Path string `json:"path"`};if json.NewDecoder(r.Body).Decode(&x)!=nil{http.Error(w,"bad json",400);return};if e:=s.ensureFolder(x.Path);e!=nil{http.Error(w,e.Error(),500);return};w.WriteHeader(204)})))
+ mux.Handle("/api/rename",basic(c.User,c.Pass,http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){var x struct{Old string `json:"old"`;New string `json:"new"`};if json.NewDecoder(r.Body).Decode(&x)!=nil{http.Error(w,"bad json",400);return};if e:=s.rename(x.Old,x.New);e!=nil{http.Error(w,e.Error(),500);return};w.WriteHeader(204)})))
+ mux.Handle("/api/delete",basic(c.User,c.Pass,http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){var x struct{Path string `json:"path"`};if json.NewDecoder(r.Body).Decode(&x)!=nil{http.Error(w,"bad json",400);return};if e:=s.remove(x.Path);e!=nil{http.Error(w,e.Error(),500);return};w.WriteHeader(204)})))
  mux.HandleFunc("/web",func(w http.ResponseWriter,r *http.Request){w.Header().Set("Content-Type","text/html; charset=utf-8");io.WriteString(w,page)})
  mux.HandleFunc("/",func(w http.ResponseWriter,r *http.Request){http.Redirect(w,r,"/web",http.StatusFound)})
  log.Printf("WebDAV: http://0.0.0.0%s/dav",c.Addr);log.Printf("Web: http://0.0.0.0%s/web",c.Addr)
