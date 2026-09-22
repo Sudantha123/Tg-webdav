@@ -255,7 +255,7 @@ func (t *Telegram) ingest(m *tg.Message) error {
 	}
 	if strings.TrimSpace(m.Message)!="" { name=strings.TrimSpace(m.Message) }
 	name=strings.NewReplacer("/","_","\\","_").Replace(name)
-	if filepath.Ext(name)=="" { if ex:=mime.ExtensionsByType(mt);len(ex)>0{name+=ex[0]} }
+	if filepath.Ext(name)=="" { if ex,_:=mime.ExtensionsByType(mt);len(ex)>0{name+=ex[0]} }
 	if name=="" { name="file_"+strconv.FormatInt(int64(m.ID),10) }
 	p:=clean("/"+t.cfg.Folder+"/"+name)
 	if err := t.forward(context.Background(), peerID(m.PeerID), int64(m.ID)); err != nil { log.Printf("forward: %v", err) }
