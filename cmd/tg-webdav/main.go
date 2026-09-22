@@ -154,6 +154,25 @@ func init() {
 	gob.Register(&tg.InputPhotoFileLocation{})
 }
 
+func (s *Store) remove(p string) error {
+ p=clean(p); if p=="/" { return errors.New("cannot remove root") }
+ _,err:=s.db.Exec("DELETE FROM items WHERE path=? OR path LIKE ?",p,strings.TrimRight(p,"/")+"/%"); return err
+}
+func (s *Store) rename(oldP,newP string) error {
+ oldP,newP=clean(oldP),clean(newP)
+ if oldP=="/" || newP=="/" { return errors.New("invalid rename") }
+ if _,e:=s.stat(oldP);e!=nil{return e}
+ if _,e:=s.stat(newP);e==nil{return os.ErrExist}
+ if e:=s.ensureFolder(path.Dir(newP));e!=nil{return e}
+ rows,e:=s.db.Query("SELECT path,name,is_dir,size,mime,mod_time,location FROM items WHERE path=? OR path LIKE ? ORDER BY length(path)",oldP,strings.TrimRight(oldP,"/")+"/%");if e!=nil{return e};defer rows.Close()
+ type pair struct{i Item}
+ var all []pair
+ for rows.Next(){var x Item;var d,mt int64;if e:=rows.Scan(&x.Path,&x.Name,&d,&x.Size,&x.MIME,&mt,&x.Loc);e!=nil{return e};x.Dir=d!=0;x.Mod=time.Unix(mt,0);all=append(all,pair{x})}
+ for _,p:=range all{np:=newP+strings.TrimPrefix(p.i.Path,oldP);_,e:=s.db.Exec("INSERT OR REPLACE INTO items(path,name,is_dir,size,mime,mod_time,location) VALUES(?,?,?,?,?,?,?)",np,path.Base(np),boolInt(p.i.Dir),p.i.Size,p.i.MIME,p.i.Mod.Unix(),p.i.Loc);if e!=nil{return e}}
+ return s.remove(oldP)
+}
+func boolInt(v bool) int {if v{return 1};return 0}
+
 type Telegram struct {
 	cfg Config
 	store *Store
@@ -255,10 +274,10 @@ func(d *dirFile)Close()error{return nil};func(d *dirFile)Read([]byte)(int,error)
 func(d *dirFile)Readdir(n int)([]os.FileInfo,error){if d.pos>=len(d.items){return nil,io.EOF};end:=len(d.items);if n>0&&d.pos+n<end{end=d.pos+n};out:=make([]os.FileInfo,0,end-d.pos);for _,x:=range d.items[d.pos:end]{out=append(out,fileInfo{x.Name,x.Size,x.Dir,x.Mod})};d.pos=end;return out,nil}
 
 type FS struct{s *Store;t *Telegram;c *cache}
-func(f *FS)Mkdir(context.Context,string,os.FileMode)error{return errors.New("MKCOL disabled in v1")}
+func(f *FS)Mkdir(_ context.Context,n string,_ os.FileMode)error{return f.s.ensureFolder(n)}
 func(f *FS)Stat(_ context.Context,n string)(os.FileInfo,error){i,e:=f.s.stat(n);if e!=nil{return nil,e};return fileInfo{i.Name,i.Size,i.Dir,i.Mod},nil}
-func(f *FS)RemoveAll(context.Context,string)error{return errors.New("DELETE disabled in v1")}
-func(f *FS)Rename(context.Context,string,string)error{return errors.New("MOVE disabled in v1")}
+func(f *FS)RemoveAll(_ context.Context,n string)error{return f.s.remove(n)}
+func(f *FS)Rename(_ context.Context,a,b string)error{return f.s.rename(a,b)}
 func(f *FS)OpenFile(ctx context.Context,n string,_ int,_ os.FileMode)(webdav.File,error){i,e:=f.s.stat(n);if e!=nil{return nil,e};if i.Dir{xs,e:=f.s.list(n);if e!=nil{return nil,e};return &dirFile{fileInfo{i.Name,0,true,i.Mod},xs,0},nil};if f.t.client==nil{return nil,errors.New("Telegram not connected")};l,e:=decodeLocation(i.Loc);if e!=nil{return nil,e};return &rangeFile{ctx,f.t.client,l,i.Size,0,i.Name,f.t.cfg.Chunk,f.c},nil}
 
 func basic(user, pass string, h http.Handler) http.Handler {
