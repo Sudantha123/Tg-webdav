@@ -307,8 +307,8 @@ func(t *Telegram) uploadFile(ctx context.Context, local, name string) error {
  if t.client==nil || t.peers==nil{return errors.New("Telegram not connected")}
  ch,err:=t.peers.ResolveChannelID(ctx,t.cfg.Channel);if err!=nil{return err}
 	s:=message.NewSender(t.client.API()).To(ch.InputPeer())
-	upd,err:=s.Upload(message.FromPath(local)).File(ctx);if err!=nil{return err}
-	m,err:=unpack.Message(upd);if err!=nil{return err}
+	upd,err:=s.Upload(message.FromPath(local)).File(ctx)
+	m,err:=unpack.Message(upd,err);if err!=nil{return err}
 	var loc tg.InputFileLocationClass;var size int64;mt:=mime.TypeByExtension(filepath.Ext(name))
 	switch x:=m.Media.(type){
 	case *tg.MessageMediaDocument:
