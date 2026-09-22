@@ -285,7 +285,18 @@ func(f *rangeFile)chunkData(idx int64)([]byte,error){k:=fmt.Sprintf("%s:%d",f.na
 
 type dirFile struct{inf fileInfo; items []Item; pos int}
 func(d *dirFile)Close()error{return nil};func(d *dirFile)Read([]byte)(int,error){return 0,io.EOF};func(d *dirFile)Write([]byte)(int,error){return 0,errors.New("read-only directory")};func(d *dirFile)Seek(int64,int)(int64,error){return 0,errors.New("directory seek unsupported")};func(d *dirFile)Stat()(os.FileInfo,error){return d.inf,nil}
-func(d *dirFile)Readdir(n int)([]os.FileInfo,error){if d.pos>=len(d.items){return nil,io.EOF};end:=len(d.items);if n>0&&d.pos+n<end{end=d.pos+n};out:=make([]os.FileInfo,0,end-d.pos);for _,x:=range d.items[d.pos:end]{out=append(out,fileInfo{x.Name,x.Size,x.Dir,x.Mod})};d.pos=end;return out,nil}
+func(d *dirFile)Readdir(n int)([]os.FileInfo,error){
+ if d.pos>=len(d.items){
+  if n>0{return nil,io.EOF}
+  return []os.FileInfo{},nil
+ }
+ end:=len(d.items)
+ if n>0&&d.pos+n<end{end=d.pos+n}
+ out:=make([]os.FileInfo,0,end-d.pos)
+ for _,x:=range d.items[d.pos:end]{out=append(out,fileInfo{x.Name,x.Size,x.Dir,x.Mod})}
+ d.pos=end
+ return out,nil
+}
 
 type FS struct{s *Store;t *Telegram;c *cache}
 func(f *FS)Mkdir(_ context.Context,n string,_ os.FileMode)error{return f.s.ensureFolder(n)}
@@ -366,7 +377,7 @@ func main(){
  ctx,cancel:=context.WithCancel(context.Background());defer cancel()
  t:=&Telegram{cfg:c,store:s};go func(){if e:=t.run(ctx);e!=nil{log.Printf("telegram: %v",e)}}()
  fs:=&FS{s:s,t:t,c:newCache(c.CacheMB)}
- dav:=&webdav.Handler{Prefix:"/dav",FileSystem:fs,LockSystem:webdav.NewMemLS()}
+ dav:=&webdav.Handler{Prefix:"/dav",FileSystem:fs,LockSystem:webdav.NewMemLS(),Logger:func(r *http.Request,e error){if e!=nil{log.Printf("webdav %s %s: %v",r.Method,r.URL.Path,e)}}}
  mux:=http.NewServeMux()
  mux.Handle("/dav/",basic(c.User,c.Pass,dav))
  mux.Handle("/api/list",basic(c.User,c.Pass,http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
