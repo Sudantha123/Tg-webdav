@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/gotd/td/session"
+	"github.com/joho/godotenv"
 	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
 	"golang.org/x/net/webdav"
@@ -265,6 +266,7 @@ func basic(user,pass string,h http.Handler)http.Handler{return http.HandlerFunc(
 const page = "<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tg-webdav</title><style>body{font-family:system-ui;background:#0b1020;color:#eef;padding:20px;max-width:1000px;margin:auto}.i{padding:12px;margin:7px 0;background:#111a2d;border-radius:10px}.m{color:#8895ad}</style></head><body><h1>Telegram WebDAV</h1><p id="p"></p><div id="l"></div><script>let p='/general';async function load(){let r=await fetch('/api/list?path='+encodeURIComponent(p));if(r.status==401){alert('Use WebDAV Basic Auth credentials.');return}let j=await r.json();document.getElementById('p').textContent=p;document.getElementById('l').innerHTML=(j.items||[]).map(x=>'<div class=i>'+ (x.dir?'📁':'📄') +' '+x.name+' <span class=m>'+x.size+' bytes</span></div>').join('')||'Empty'}load()</script></body></html>"
 
 func main(){
+	_ = godotenv.Load()
 	c:=loadConfig()
 	s,e:=openStore(c);if e!=nil{log.Fatal(e)};defer s.db.Close()
 	ctx,cancel:=context.WithCancel(context.Background());defer cancel()
