@@ -1,0 +1,8 @@
+.env
+data/
+*.db
+*.session
+*.session-journal
+*.tmp
+tg-webdav
+tg-webdav-linux-amd64
