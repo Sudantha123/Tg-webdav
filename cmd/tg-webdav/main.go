@@ -332,7 +332,7 @@ func(f *FS)OpenFile(ctx context.Context,n string,flag int,_ os.FileMode)(webdav.
   if err:=f.s.ensureFolder(path.Dir(clean(n)));err!=nil{return nil,err}
   if err:=os.MkdirAll("./data/uploads",0700);err!=nil{return nil,err}
   tf,err:=os.CreateTemp("./data/uploads","put-*");if err!=nil{return nil,err}
-  return &uploadFile{fs:f,name:strings.TrimPrefix(clean(n), "/"+f.fs.t.cfg.Folder+"/"),file:tf},nil
+  return &uploadFile{fs:f,name:strings.TrimPrefix(clean(n), "/"+u.fs.t.cfg.Folder+"/"),file:tf},nil
  }
  if e!=nil{return nil,e}
  if flag&(os.O_WRONLY|os.O_RDWR|os.O_TRUNC)!=0 && !i.Dir {
