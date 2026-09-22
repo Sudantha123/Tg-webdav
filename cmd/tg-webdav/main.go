@@ -209,6 +209,7 @@ func (t *Telegram) run(ctx context.Context) error {
 		if _,err:=t.client.Auth().Bot(ctx,t.cfg.BotToken); err!=nil { return err }
 		t.peers = peers.Options{}.Build(t.client.API())
 		if err:=t.peers.Init(ctx); err!=nil { return err }
+		if err:=t.syncChannel(ctx); err!=nil { log.Printf("channel index sync: %v", err) }
 		return telegram.RunUntilCanceled(ctx,t.client)
 	})
 }
@@ -238,32 +239,89 @@ func peerID(p tg.PeerClass) int64 {
 	}
 }
 
-func (t *Telegram) ingest(m *tg.Message) error {
+func (t *Telegram) indexMessage(m *tg.Message) error {
 	var loc tg.InputFileLocationClass
 	var size int64
 	name := ""
 	mt := "application/octet-stream"
+
 	switch x := m.Media.(type) {
 	case *tg.MessageMediaDocument:
-		d,ok:=x.Document.(*tg.Document); if !ok { return nil }
-		loc=&tg.InputDocumentFileLocation{ID:d.ID,AccessHash:d.AccessHash,FileReference:d.FileReference}
-		size=d.Size; mt=d.MimeType
-		for _,a:=range d.Attributes { if f,ok:=a.(*tg.DocumentAttributeFilename);ok { name=f.FileName } }
+		d, ok := x.Document.(*tg.Document)
+		if !ok { return nil }
+		loc = &tg.InputDocumentFileLocation{ID:d.ID, AccessHash:d.AccessHash, FileReference:d.FileReference}
+		size = d.Size
+		mt = d.MimeType
+		for _, a := range d.Attributes {
+			if f, ok := a.(*tg.DocumentAttributeFilename); ok { name = f.FileName }
+		}
 	case *tg.MessageMediaPhoto:
-		p,ok:=x.Photo.(*tg.Photo); if !ok { return nil }
-		loc=&tg.InputPhotoFileLocation{ID:p.ID,AccessHash:p.AccessHash,FileReference:p.FileReference}
-		name="image_"+strconv.FormatInt(int64(m.ID),10)+".jpg"; mt="image/jpeg"
-	default: return nil
+		p, ok := x.Photo.(*tg.Photo)
+		if !ok { return nil }
+		loc = &tg.InputPhotoFileLocation{ID:p.ID, AccessHash:p.AccessHash, FileReference:p.FileReference}
+		name = "image_" + strconv.FormatInt(int64(m.ID), 10) + ".jpg"
+		mt = "image/jpeg"
+	default:
+		return nil
 	}
-	if strings.TrimSpace(m.Message)!="" { name=strings.TrimSpace(m.Message) }
-	name=strings.NewReplacer("/","_","\\","_").Replace(name)
-	if filepath.Ext(name)=="" { if ex,_:=mime.ExtensionsByType(mt);len(ex)>0{name+=ex[0]} }
-	if name=="" { name="file_"+strconv.FormatInt(int64(m.ID),10) }
-	p:=clean("/"+t.cfg.Folder+"/"+name)
-	if err := t.forward(context.Background(), peerID(m.PeerID), int64(m.ID)); err != nil { log.Printf("forward: %v", err) }
-	b,err:=encodeLocation(loc);if err!=nil{return err}
-	_,err=t.store.db.Exec("INSERT OR REPLACE INTO items(path,name,is_dir,size,mime,mod_time,location) VALUES(?,?,0,?,?,?,?)",p,name,size,mt,time.Unix(int64(m.Date),0),b)
-	return err
+
+	if strings.TrimSpace(m.Message) != "" { name = strings.TrimSpace(m.Message) }
+	name = strings.NewReplacer("/", "_", "\\", "_").Replace(name)
+	if filepath.Ext(name) == "" {
+		if ex, _ := mime.ExtensionsByType(mt); len(ex) > 0 { name += ex[0] }
+	}
+	if name == "" { name = "file_" + strconv.FormatInt(int64(m.ID), 10) }
+
+	p := clean("/" + t.cfg.Folder + "/" + name)
+	b, err := encodeLocation(loc)
+	if err != nil { return err }
+	if err := t.store.upsert(Item{
+		Path:p, Name:name, Size:size, MIME:mt, Dir:false,
+		Mod:time.Unix(int64(m.Date),0), Loc:b,
+	}); err != nil {
+		return err
+	}
+	log.Printf("indexed Telegram media: %s (%d bytes)", p, size)
+	return nil
+}
+
+func (t *Telegram) ingest(m *tg.Message) error {
+	if err := t.indexMessage(m); err != nil { return err }
+	if err := t.forward(context.Background(), peerID(m.PeerID), int64(m.ID)); err != nil {
+		log.Printf("forward: %v", err)
+	}
+	return nil
+}
+
+// syncChannel rebuilds the SQLite index from recent media already present in the storage channel.
+// This makes files survive application restarts and also repairs an index that was empty while
+// the Telegram forwarding itself succeeded.
+func (t *Telegram) syncChannel(ctx context.Context) error {
+	if t.cfg.Channel == 0 || t.peers == nil { return nil }
+	ch, err := t.peers.ResolveChannelID(ctx, t.cfg.Channel)
+	if err != nil { return err }
+
+	res, err := t.client.API().MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
+		Peer: ch.InputPeer(),
+		Limit: 100,
+	})
+	if err != nil { return err }
+
+	mod, ok := res.AsModified()
+	if !ok { return fmt.Errorf("unsupported Telegram history response %T", res) }
+
+	count := 0
+	for _, raw := range mod.GetMessages() {
+		m, ok := raw.(*tg.Message)
+		if !ok || m.Out == false && m.PeerID == nil { continue }
+		if err := t.indexMessage(m); err != nil {
+			log.Printf("channel index message %d: %v", m.ID, err)
+			continue
+		}
+		count++
+	}
+	log.Printf("Telegram channel index sync complete: %d media messages", count)
+	return nil
 }
 
 type cache struct{ mu sync.Mutex; m map[string][]byte; order []string; size,max int64 }
