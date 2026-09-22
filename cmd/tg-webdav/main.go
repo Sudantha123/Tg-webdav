@@ -11,6 +11,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -178,6 +179,31 @@ func (t *Telegram) run(ctx context.Context) error {
 	})
 }
 
+func (t *Telegram) forward(ctx context.Context, fromChat int64, msgID int64) error {
+	if t.cfg.Channel == 0 || fromChat == 0 { return nil }
+	v := url.Values{}
+	v.Set("chat_id", strconv.FormatInt(t.cfg.Channel, 10))
+	v.Set("from_chat_id", strconv.FormatInt(fromChat, 10))
+	v.Set("message_id", strconv.FormatInt(msgID, 10))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.telegram.org/bot"+t.cfg.BotToken+"/forwardMessage", strings.NewReader(v.Encode()))
+	if err != nil { return err }
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil { return err }
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 { b,_:=io.ReadAll(io.LimitReader(resp.Body,4096)); return fmt.Errorf("forwardMessage: %s: %s",resp.Status,strings.TrimSpace(string(b))) }
+	return nil
+}
+
+func peerID(p tg.PeerClass) int64 {
+	switch x := p.(type) {
+	case *tg.PeerUser: return x.UserID
+	case *tg.PeerChat: return int64(x.ChatID)
+	case *tg.PeerChannel: return int64(x.ChannelID)
+	default: return 0
+	}
+}
+
 func (t *Telegram) ingest(m *tg.Message) error {
 	var loc tg.InputFileLocationClass
 	var size int64
@@ -200,6 +226,7 @@ func (t *Telegram) ingest(m *tg.Message) error {
 	if filepath.Ext(name)=="" { if ex:=mime.ExtensionsByType(mt);len(ex)>0{name+=ex[0]} }
 	if name=="" { name="file_"+strconv.FormatInt(int64(m.ID),10) }
 	p:=clean("/"+t.cfg.Folder+"/"+name)
+	if err := t.forward(context.Background(), peerID(m.PeerID), int64(m.ID)); err != nil { log.Printf("forward: %v", err) }
 	b,err:=encodeLocation(loc);if err!=nil{return err}
 	_,err=t.store.db.Exec("INSERT OR REPLACE INTO items(path,name,is_dir,size,mime,mod_time,location) VALUES(?,?,0,?,?,?,?)",p,name,size,mt,time.Unix(int64(m.Date),0),b)
 	return err
