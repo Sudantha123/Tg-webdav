@@ -9,3 +9,5 @@ require (
 	golang.org/x/net v0.57.0
 	modernc.org/sqlite v1.39.1
 )
+
+replace github.com/gotd/log => github.com/gotd/log v0.1.0
