@@ -261,23 +261,38 @@ func(f *FS)RemoveAll(context.Context,string)error{return errors.New("DELETE disa
 func(f *FS)Rename(context.Context,string,string)error{return errors.New("MOVE disabled in v1")}
 func(f *FS)OpenFile(ctx context.Context,n string,_ int,_ os.FileMode)(webdav.File,error){i,e:=f.s.stat(n);if e!=nil{return nil,e};if i.Dir{xs,e:=f.s.list(n);if e!=nil{return nil,e};return &dirFile{fileInfo{i.Name,0,true,i.Mod},xs,0},nil};if f.t.client==nil{return nil,errors.New("Telegram not connected")};l,e:=decodeLocation(i.Loc);if e!=nil{return nil,e};return &rangeFile{ctx,f.t.client,l,i.Size,0,i.Name,f.t.cfg.Chunk,f.c},nil}
 
-func basic(user,pass string,h http.Handler)http.Handler{return http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){u,p,ok:=r.BasicAuth();if !ok||u!=user||p!=pass{w.Header().Set("WWW-Authenticate","Basic realm="Tg-webdav"");http.Error(w,"unauthorized",401);return};h.ServeHTTP(w,r)})}
+func basic(user, pass string, h http.Handler) http.Handler {
+ return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+  u,p,ok:=r.BasicAuth()
+  if !ok || u!=user || p!=pass {
+   w.Header().Set("WWW-Authenticate", `Basic realm="Tg-webdav"`)
+   http.Error(w,"unauthorized",http.StatusUnauthorized); return
+  }
+  h.ServeHTTP(w,r)
+ })
+}
 
-const page = "<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tg-webdav</title><style>body{font-family:system-ui;background:#0b1020;color:#eef;padding:20px;max-width:1000px;margin:auto}.i{padding:12px;margin:7px 0;background:#111a2d;border-radius:10px}.m{color:#8895ad}</style></head><body><h1>Telegram WebDAV</h1><p id="p"></p><div id="l"></div><script>let p='/general';async function load(){let r=await fetch('/api/list?path='+encodeURIComponent(p));if(r.status==401){alert('Use WebDAV Basic Auth credentials.');return}let j=await r.json();document.getElementById('p').textContent=p;document.getElementById('l').innerHTML=(j.items||[]).map(x=>'<div class=i>'+ (x.dir?'📁':'📄') +' '+x.name+' <span class=m>'+x.size+' bytes</span></div>').join('')||'Empty'}load()</script></body></html>"
+const page = `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tg-webdav</title><style>body{font-family:system-ui;background:#0b1020;color:#eef;padding:20px;max-width:1000px;margin:auto}.i{padding:12px;margin:7px 0;background:#111a2d;border-radius:10px}.m{color:#8895ad}</style></head><body><h1>Telegram WebDAV</h1><p id="p"></p><div id="l"></div><script>let p='/general';async function load(){let r=await fetch('/api/list?path='+encodeURIComponent(p));if(r.status==401){alert('Use WebDAV Basic Auth credentials.');return}let j=await r.json();document.getElementById('p').textContent=p;document.getElementById('l').innerHTML=(j.items||[]).map(x=>'<div class=i>'+ (x.dir?'📁':'📄') +' '+x.name+' <span class=m>'+x.size+' bytes</span></div>').join('')||'Empty'}load()</script></body></html>;
 
 func main(){
-	_ = godotenv.Load()
-	c:=loadConfig()
-	s,e:=openStore(c);if e!=nil{log.Fatal(e)};defer s.db.Close()
-	ctx,cancel:=context.WithCancel(context.Background());defer cancel()
-	t:=&Telegram{cfg:c,store:s};go func(){if e:=t.run(ctx);e!=nil{log.Printf("telegram: %v",e)}}()
-	fs:=&FS{s:s,t:t,c:newCache(c.CacheMB)}
-	dav:=&webdav.Handler{Prefix:"/dav",FileSystem:fs,LockSystem:webdav.NewMemLS()}
-	mux:=http.NewServeMux()
-	mux.Handle("/dav/",basic(c.User,c.Pass,dav))
-	mux.HandleFunc("/api/list",func(w http.ResponseWriter,r *http.Request){xs,e:=s.list(r.URL.Query().Get("path"));if e!=nil{http.Error(w,e.Error(),500);return};w.Header().Set("Content-Type","application/json");fmt.Fprint(w,"{"items":[");for i,x:=range xs{if i>0{fmt.Fprint(w,",")};fmt.Fprintf(w,"{"name":%q,"path":%q,"dir":%t,"size":%d}",x.Name,x.Path,x.Dir,x.Size)};fmt.Fprint(w,"]}")})
-	mux.HandleFunc("/web",func(w http.ResponseWriter,r *http.Request){w.Header().Set("Content-Type","text/html; charset=utf-8");io.WriteString(w,page)})
-	mux.HandleFunc("/",func(w http.ResponseWriter,r *http.Request){http.Redirect(w,r,"/web",http.StatusFound)})
-	log.Printf("WebDAV: http://0.0.0.0%s/dav",c.Addr);log.Printf("Web: http://0.0.0.0%s/web",c.Addr)
-	log.Fatal(http.ListenAndServe(c.Addr,mux))
+ _ = godotenv.Load()
+ c:=loadConfig()
+ s,e:=openStore(c);if e!=nil{log.Fatal(e)};defer s.db.Close()
+ ctx,cancel:=context.WithCancel(context.Background());defer cancel()
+ t:=&Telegram{cfg:c,store:s};go func(){if e:=t.run(ctx);e!=nil{log.Printf("telegram: %v",e)}}()
+ fs:=&FS{s:s,t:t,c:newCache(c.CacheMB)}
+ dav:=&webdav.Handler{Prefix:"/dav",FileSystem:fs,LockSystem:webdav.NewMemLS()}
+ mux:=http.NewServeMux()
+ mux.Handle("/dav/",basic(c.User,c.Pass,dav))
+ mux.Handle("/api/list",basic(c.User,c.Pass,http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  xs,e:=s.list(r.URL.Query().Get("path"));if e!=nil{http.Error(w,e.Error(),500);return}
+  w.Header().Set("Content-Type","application/json")
+  fmt.Fprint(w,"{\"items\":[")
+  for i,x:=range xs{if i>0{fmt.Fprint(w,",")};fmt.Fprintf(w,"{\"name\":%q,\"path\":%q,\"dir\":%t,\"size\":%d}",x.Name,x.Path,x.Dir,x.Size)}
+  fmt.Fprint(w,"]}")
+ })))
+ mux.HandleFunc("/web",func(w http.ResponseWriter,r *http.Request){w.Header().Set("Content-Type","text/html; charset=utf-8");io.WriteString(w,page)})
+ mux.HandleFunc("/",func(w http.ResponseWriter,r *http.Request){http.Redirect(w,r,"/web",http.StatusFound)})
+ log.Printf("WebDAV: http://0.0.0.0%s/dav",c.Addr);log.Printf("Web: http://0.0.0.0%s/web",c.Addr)
+ log.Fatal(http.ListenAndServe(c.Addr,mux))
 }
