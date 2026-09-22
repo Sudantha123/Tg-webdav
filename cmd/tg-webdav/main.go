@@ -216,14 +216,14 @@ func(i fileInfo)Name()string{return i.name};func(i fileInfo)Size()int64{return i
 
 type rangeFile struct{ctx context.Context; client *telegram.Client; loc tg.InputFileLocationClass; size,off int64; name string; chunk int; cache *cache}
 func(f *rangeFile)Stat()(os.FileInfo,error){return fileInfo{f.name,f.size,false,time.Now()},nil}
-func(f *rangeFile)Close()error{return nil};func(f *rangeFile)Readdir(int)([]os.FileInfo,error){return nil,nil}
+func(f *rangeFile)Close()error{return nil};func(f *rangeFile)Readdir(int)([]os.FileInfo,error){return nil,nil};func(f *rangeFile)Write([]byte)(int,error){return 0,errors.New("read-only file")}
 func(f *rangeFile)Seek(o int64,w int)(int64,error){switch w{case io.SeekStart:f.off=o;case io.SeekCurrent:f.off+=o;case io.SeekEnd:f.off=f.size+o;default:return f.off,errors.New("bad seek")};if f.off<0{return f.off,errors.New("negative seek")};return f.off,nil}
 func(f *rangeFile)Read(p []byte)(int,error){if f.off>=f.size{return 0,io.EOF};n:=int64(len(p));if n>f.size-f.off{n=f.size-f.off};got,e:=f.readAt(p[:n],f.off);f.off+=int64(got);return got,e}
 func(f *rangeFile)readAt(p []byte,off int64)(int,error){total:=0;for total<len(p){idx:=off/int64(f.chunk);in:=off%int64(f.chunk);b,e:=f.chunkData(idx);if e!=nil{return total,e};if in>=int64(len(b)){return total,io.EOF};n:=copy(p[total:],b[in:]);total+=n;off+=int64(n)};return total,nil}
 func(f *rangeFile)chunkData(idx int64)([]byte,error){k:=fmt.Sprintf("%s:%d",f.name,idx);if b,ok:=f.cache.get(k);ok{return b,nil};off:=idx*int64(f.chunk);lim:=f.chunk;if r:=f.size-off;r<int64(lim){lim=int(r)};res,e:=f.client.API().UploadGetFile(f.ctx,&tg.UploadGetFileRequest{Location:f.loc,Offset:off,Limit:lim,Precise:true});if e!=nil{return nil,e};x,ok:=res.(*tg.UploadFile);if !ok{return nil,fmt.Errorf("Telegram returned %T",res)};f.cache.set(k,x.Bytes);return x.Bytes,nil}
 
 type dirFile struct{inf fileInfo; items []Item; pos int}
-func(d *dirFile)Close()error{return nil};func(d *dirFile)Read([]byte)(int,error){return 0,io.EOF};func(d *dirFile)Seek(int64,int)(int64,error){return 0,errors.New("directory seek unsupported")};func(d *dirFile)Stat()(os.FileInfo,error){return d.inf,nil}
+func(d *dirFile)Close()error{return nil};func(d *dirFile)Read([]byte)(int,error){return 0,io.EOF};func(d *dirFile)Write([]byte)(int,error){return 0,errors.New("read-only directory")};func(d *dirFile)Seek(int64,int)(int64,error){return 0,errors.New("directory seek unsupported")};func(d *dirFile)Stat()(os.FileInfo,error){return d.inf,nil}
 func(d *dirFile)Readdir(n int)([]os.FileInfo,error){if d.pos>=len(d.items){return nil,io.EOF};end:=len(d.items);if n>0&&d.pos+n<end{end=d.pos+n};out:=make([]os.FileInfo,0,end-d.pos);for _,x:=range d.items[d.pos:end]{out=append(out,fileInfo{x.Name,x.Size,x.Dir,x.Mod})};d.pos=end;return out,nil}
 
 type FS struct{s *Store;t *Telegram;c *cache}
