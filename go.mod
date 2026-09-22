@@ -1,6 +1,6 @@
 module github.com/Sudantha123/Tg-webdav
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/gotd/log v0.2.0
